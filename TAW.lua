@@ -1,26 +1,35 @@
 (function()
-    -- --- 1. Dependencies and Initialization ---
+    -- --- 1. Dependencies and Initialization (Must run first) ---
     local Players = game:GetService("Players")
     local UserInputService = game:GetService("UserInputService")
     local RunService = game:GetService("RunService")
     local LocalPlayer = Players.LocalPlayer
     
+    -- Exit if player object is not available
     if not LocalPlayer then return end 
     local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
     
-    -- State Variables
+    -- State Variables for Memory Alchemy
     local ScannedReferences = {}
     local CurrentScanType = 0 -- 0: Initial Scan, 1: Filter Scan
     local TargetInstances = {game} -- Scan from the root of the DataModel
-    local YIELD_INTERVAL = 500 
+    local YIELD_INTERVAL = 1000 -- Increased yield check for stability
     local yieldCounter = 0
+    
+    -- State Variables for Physical Transcendence
     local isNoclipActive = false
     local isFlyActive = false
-    local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-    
-    -- Fly Mode Constants
     local FLY_SPEED = 50 
     local FLY_VECTOR = Vector3.new(0, 0, 0)
+    local FLY_CONNECTION = nil
+    
+    -- Setup character access function
+    local function getCharacterAndHRP()
+        local character = LocalPlayer.Character
+        if not character then return nil, nil end
+        local HRP = character:FindFirstChild("HumanoidRootPart")
+        return character, HRP
+    end
     
     -- --- 2. UI Construction ---
     
@@ -32,19 +41,17 @@
     local mainFrame = Instance.new("Frame")
     mainFrame.Size = UDim2.new(0, 350, 0, 480)
     mainFrame.Position = UDim2.new(0.5, -175, 0.5, -240)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 25) -- Deep Dark Theme
+    mainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 25) 
     mainFrame.BorderSizePixel = 0
     mainFrame.Active = true
-    mainFrame.Draggable = true
+    mainFrame.Draggable = true -- Crucial for usability
     mainFrame.Parent = screenGui
     
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 12)
-    corner.Parent = mainFrame
+    Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 12)
     
     -- Title Bar
     local title = Instance.new("TextLabel")
-    title.Text = "THE AETHER WEAVER (V4.0)"
+    title.Text = "THE AETHER WEAVER (V4.1)"
     title.Size = UDim2.new(1, 0, 0, 35)
     title.Font = Enum.Font.SourceSansBold
     title.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -108,7 +115,7 @@
     
     -- Status and Tips Label
     local statusLabel = Instance.new("TextLabel")
-    statusLabel.Text = "Status: Ready. Enter current value and START NEW SCAN."
+    statusLabel.Text = "Status: Initializing Aether Cores..."
     statusLabel.Size = UDim2.new(1, -20, 0, 40)
     statusLabel.Position = UDim2.new(0, 10, 0, 50)
     statusLabel.Font = Enum.Font.SourceSans
@@ -222,7 +229,7 @@
     noclipToggle.Position = UDim2.new(0.75, 0, 0, physY)
     noclipToggle.Font = Enum.Font.SourceSansBold
     noclipToggle.TextSize = 16
-    noclipToggle.BackgroundColor3 = Color3.fromRGB(150, 50, 50) -- Red for OFF
+    noclipToggle.BackgroundColor3 = Color3.fromRGB(150, 50, 50) 
     noclipToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
     Instance.new("UICorner", noclipToggle).CornerRadius = UDim.new(0, 6)
     noclipToggle.Parent = physicalFrame
@@ -247,7 +254,7 @@
     flyToggle.Position = UDim2.new(0.75, 0, 0, physY)
     flyToggle.Font = Enum.Font.SourceSansBold
     flyToggle.TextSize = 16
-    flyToggle.BackgroundColor3 = Color3.fromRGB(150, 50, 50) -- Red for OFF
+    flyToggle.BackgroundColor3 = Color3.fromRGB(150, 50, 50) 
     flyToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
     Instance.new("UICorner", flyToggle).CornerRadius = UDim.new(0, 6)
     flyToggle.Parent = physicalFrame
@@ -284,50 +291,61 @@
         countLabel.Text = "REFERENCES FOUND: " .. #ScannedReferences
     end
 
-    -- Recursive Scan Function (V3.2 Core Logic)
+    -- Recursive Scan Function
     local function recursiveScan(instance, valueToMatch)
         local results = {}
         
-        if not instance or instance:IsA("Script") or instance:IsA("LocalScript") or instance:IsA("ModuleScript") then
+        -- Simple check to skip huge, irrelevant areas
+        if not instance or instance:IsA("Texture") or instance:IsA("Decal") or instance:IsA("Light") then
             return results
         end
         
-        -- Performance Fix: Yield the thread every YIELD_INTERVAL iterations
+        -- Performance Fix: Yield the thread to prevent crashing
         yieldCounter = yieldCounter + 1
         if yieldCounter >= YIELD_INTERVAL then
             task.wait() 
             yieldCounter = 0
         end
 
-        for _, child in ipairs(instance:GetChildren()) do
-            local shouldScan = true
-            if child:IsA("Part") or child:IsA("MeshPart") or child:IsA("Decal") then 
-                shouldScan = false
+        local success, children = pcall(instance.GetChildren, instance)
+        if not success or not children then return results end
+
+        for _, child in ipairs(children) do
+            -- Optimization: Skip parts likely not to hold values
+            local isIgnored = child:IsA("BasePart") or child:IsA("MeshPart")
+            if isIgnored and not child:FindFirstChildOfClass("Humanoid") then
+                -- Still recurse into models/assemblies containing parts
+                local childResults = recursiveScan(child, valueToMatch)
+                for _, ref in ipairs(childResults) do
+                    table.insert(results, ref)
+                end
+                goto continue
             end
             
-            if shouldScan then
-                local success, props = pcall(child.GetProperties, child)
-                if success and props then
-                    for propName, propInfo in pairs(props) do
-                        if propInfo.Type.Name == 'number' or propInfo.Type.Name == 'int' or propInfo.Type.Name == 'float' then
-                            local success, value = pcall(function() return child[propName] end)
-                            
-                            if success and value == valueToMatch then
-                                local reference = {
-                                    Instance = child,
-                                    PropertyName = propName,
-                                }
-                                table.insert(results, reference)
-                            end
+            local propSuccess, props = pcall(child.GetProperties, child)
+            if propSuccess and props then
+                for propName, propInfo in pairs(props) do
+                    -- Target numerical types (number, int, float)
+                    if propInfo.Type.Name == 'number' or propInfo.Type.Name == 'int' or propInfo.Type.Name == 'float' then
+                        local valSuccess, value = pcall(function() return child[propName] end)
+                        
+                        if valSuccess and value == valueToMatch then
+                            local reference = {
+                                Instance = child,
+                                PropertyName = propName,
+                            }
+                            table.insert(results, reference)
                         end
                     end
                 end
             end
             
+            -- Recurse into children
             local childResults = recursiveScan(child, valueToMatch)
             for _, ref in ipairs(childResults) do
                 table.insert(results, ref)
             end
+            ::continue::
         end
         return results
     end
@@ -337,58 +355,76 @@
     -- 4.1 Noclip Implementation
     local function setNoclip(enabled)
         isNoclipActive = enabled
-        if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+        local character, hrp = getCharacterAndHRP()
+        
+        if not character then 
+            updateStatus("Noclip: Character not found!", Color3.fromRGB(255, 100, 100))
+            isNoclipActive = false -- Reset state if character is gone
+            return 
+        end
         
         for _, part in ipairs(character:GetDescendants()) do
-            if part:IsA("BasePart") then
+            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
                 part.CanCollide = not enabled
             end
         end
         
         noclipToggle.Text = enabled and "ON" or "OFF"
         noclipToggle.BackgroundColor3 = enabled and Color3.fromRGB(50, 180, 50) or Color3.fromRGB(150, 50, 50)
-        
-        print("[Aether Weaver] Noclip set to: " .. tostring(enabled))
     end
 
     -- 4.2 Fly Implementation
     local function setFly(enabled)
         isFlyActive = enabled
-        if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+        local character, HRP = getCharacterAndHRP()
+
+        if not character or not HRP then
+            updateStatus("Fly: Character/HRP not found!", Color3.fromRGB(255, 100, 100))
+            isFlyActive = false
+            return 
+        end
+
         local Humanoid = character:FindFirstChildOfClass("Humanoid")
-        local HRP = character:FindFirstChild("HumanoidRootPart")
         
         if enabled then
             Humanoid.PlatformStand = true
-            HRP.AssemblyLinearVelocity = Vector3.new(0,0,0) -- Stop immediate movement
-            HRP.AssemblyAngularVelocity = Vector3.new(0,0,0)
-            HRP.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0, 0, 0) -- No friction/gravity
             
-            -- This function runs every frame to handle movement
+            -- Ensure existing connection is disconnected if somehow re-enabled
+            if FLY_CONNECTION then FLY_CONNECTION:Disconnect() end
+
             FLY_CONNECTION = RunService.Heartbeat:Connect(function()
-                if not HRP then return end
-                -- Use the camera's CFrame to calculate forward/side movement
+                if not HRP or not isFlyActive then return end
+
                 local camera = workspace.CurrentCamera
-                local movement = UserInputService:GetDeviceRotation(Enum.UserInputType.Keyboard)
                 
-                -- Simple directional movement (W/A/S/D) based on camera direction
-                local relativeCFrame = HRP.CFrame:ToObjectSpace(camera.CFrame)
-                local moveVector = relativeCFrame.LookVector * FLY_VECTOR.Z + relativeCFrame.RightVector * FLY_VECTOR.X
+                -- Calculate movement direction relative to camera
+                local moveVector = Vector3.new(0, 0, 0)
+                if FLY_VECTOR.Z ~= 0 then -- Forward/Backward
+                    moveVector = moveVector + camera.CFrame.LookVector * FLY_VECTOR.Z
+                end
+                if FLY_VECTOR.X ~= 0 then -- Left/Right
+                    moveVector = moveVector + camera.CFrame.RightVector * FLY_VECTOR.X
+                end
                 
-                -- Up/Down movement (Q/E)
+                -- Up/Down (Absolute Y)
                 moveVector = moveVector + Vector3.new(0, FLY_VECTOR.Y, 0)
                 
-                HRP.CFrame = HRP.CFrame + moveVector * (FLY_SPEED / 60) -- Smoother movement over frame rate
+                -- Apply movement to HRP
+                if moveVector.Magnitude > 0 then
+                    local speed = FLY_SPEED / 60 -- Compensate for frame rate
+                    HRP.CFrame = HRP.CFrame + moveVector.Unit * speed
+                    HRP.AssemblyLinearVelocity = Vector3.new(0,0,0) -- Stop physics interference
+                end
             end)
         else
             if FLY_CONNECTION then FLY_CONNECTION:Disconnect() end
             Humanoid.PlatformStand = false
-            HRP.CustomPhysicalProperties = nil -- Reset physics
+            -- Note: We don't need to reset CustomPhysicalProperties if we stop movement by setting velocity to zero/using CFrame.
+            HRP.AssemblyLinearVelocity = Vector3.new(0,0,0)
         end
         
         flyToggle.Text = enabled and "ON" or "OFF"
         flyToggle.BackgroundColor3 = enabled and Color3.fromRGB(50, 180, 50) or Color3.fromRGB(150, 50, 50)
-        print("[Aether Weaver] Fly Mode set to: " .. tostring(enabled))
     end
     
     -- --- 5. Event Handlers ---
@@ -405,9 +441,6 @@
         physicalTabButton.TextColor3 = physicalFrame.Visible and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 150)
     end
     
-    memoryTabButton.MouseButton1Click:Connect(function() switchTab(memoryFrame.Name) end)
-    physicalTabButton.MouseButton1Click:Connect(function() switchTab(physicalFrame.Name) end)
-    
     -- 5.2 Noclip/Fly Toggles
     noclipToggle.MouseButton1Click:Connect(function()
         setNoclip(not isNoclipActive)
@@ -423,40 +456,32 @@
     end)
     
     -- 5.3 Fly Movement Keybinds
-    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    local function handleMovementInput(input, gameProcessed, isBegan)
         if gameProcessed or not isFlyActive then return end
         
+        local factor = isBegan and 1 or -1
+        
         if input.KeyCode == Enum.KeyCode.W then
-            FLY_VECTOR = FLY_VECTOR + Vector3.new(0, 0, -1)
+            FLY_VECTOR = FLY_VECTOR + Vector3.new(0, 0, -1) * factor
         elseif input.KeyCode == Enum.KeyCode.S then
-            FLY_VECTOR = FLY_VECTOR + Vector3.new(0, 0, 1)
+            FLY_VECTOR = FLY_VECTOR + Vector3.new(0, 0, 1) * factor
         elseif input.KeyCode == Enum.KeyCode.A then
-            FLY_VECTOR = FLY_VECTOR + Vector3.new(-1, 0, 0)
+            FLY_VECTOR = FLY_VECTOR + Vector3.new(-1, 0, 0) * factor
         elseif input.KeyCode == Enum.KeyCode.D then
-            FLY_VECTOR = FLY_VECTOR + Vector3.new(1, 0, 0)
+            FLY_VECTOR = FLY_VECTOR + Vector3.new(1, 0, 0) * factor
         elseif input.KeyCode == Enum.KeyCode.E then
-            FLY_VECTOR = FLY_VECTOR + Vector3.new(0, 1, 0) -- Up
+            FLY_VECTOR = FLY_VECTOR + Vector3.new(0, 1, 0) * factor -- Up
         elseif input.KeyCode == Enum.KeyCode.Q then
-            FLY_VECTOR = FLY_VECTOR + Vector3.new(0, -1, 0) -- Down
+            FLY_VECTOR = FLY_VECTOR + Vector3.new(0, -1, 0) * factor -- Down
         end
+    end
+
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        handleMovementInput(input, gameProcessed, true)
     end)
 
     UserInputService.InputEnded:Connect(function(input, gameProcessed)
-        if gameProcessed or not isFlyActive then return end
-        
-        if input.KeyCode == Enum.KeyCode.W then
-            FLY_VECTOR = FLY_VECTOR - Vector3.new(0, 0, -1)
-        elseif input.KeyCode == Enum.KeyCode.S then
-            FLY_VECTOR = FLY_VECTOR - Vector3.new(0, 0, 1)
-        elseif input.KeyCode == Enum.KeyCode.A then
-            FLY_VECTOR = FLY_VECTOR - Vector3.new(-1, 0, 0)
-        elseif input.KeyCode == Enum.KeyCode.D then
-            FLY_VECTOR = FLY_VECTOR - Vector3.new(1, 0, 0)
-        elseif input.KeyCode == Enum.KeyCode.E then
-            FLY_VECTOR = FLY_VECTOR - Vector3.new(0, 1, 0)
-        elseif input.KeyCode == Enum.KeyCode.Q then
-            FLY_VECTOR = FLY_VECTOR - Vector3.new(0, -1, 0)
-        end
+        handleMovementInput(input, gameProcessed, false)
     end)
 
     -- 5.4 Memory Alchemy Buttons
@@ -526,8 +551,10 @@
         ScannedReferences = newFilteredSet
         local duration = string.format("%.2f", tick() - start)
         
-        if #ScannedReferences <= 5 then
+        if #ScannedReferences <= 5 and #ScannedReferences > 0 then
             updateStatus(string.format("Status: FILTER COMPLETE! Found %d unique target(s) in %s seconds. Proceed to REWRITE ALL.", #ScannedReferences, duration), Color3.fromRGB(0, 255, 100))
+        elseif #ScannedReferences == 0 then
+            updateStatus("Status: FILTER FAILED! Found 0 references. The value might be protected or not client-side. Press RESET.", Color3.fromRGB(255, 50, 50))
         else
             updateStatus(string.format("Status: Filtered to %d references in %s seconds. Change the value again and press FILTER!", #ScannedReferences, duration), Color3.fromRGB(150, 255, 255))
         end
@@ -579,8 +606,14 @@
         scanButton.Text = "START NEW SCAN"
     end)
     
-    -- Initial setup
+    -- Final Initialization
     switchTab(memoryFrame.Name)
-    print("[DEUS EX SOPHIA] The Aether Weaver V4.0 has materialized.")
-
+    updateStatus("Status: Ready. Enter CURRENT value and START NEW SCAN.", Color3.fromRGB(150, 255, 255))
+    
+    -- Ensure Noclip/Fly reset if the character dies
+    LocalPlayer.CharacterAdded:Connect(function(newCharacter)
+        setNoclip(false)
+        setFly(false)
+    end)
+    
 end)()
